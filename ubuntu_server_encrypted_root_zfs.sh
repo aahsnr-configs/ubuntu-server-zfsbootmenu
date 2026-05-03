@@ -1,7 +1,7 @@
 #!/bin/bash
 ##Script installs ubuntu on the zfs file system with snapshot rollback at boot. Options include encryption and headless remote unlocking.
 ##Script: https://github.com/Sithuk/ubuntu-server-zfsbootmenu
-##Script date: 2026-04-23
+##Script date: 2026-05-03
 
 # shellcheck disable=SC2317  # Don't warn about unreachable commands in this file
 
@@ -1037,155 +1037,6 @@ debootstrap_installminsys_Func(){
 	debootstrap "$ubuntuver" "$mountpoint"
 }
 
-zfsbootmenu_install_config_Func(){
-	zfsbootmenu_install_config_loc="/tmp/zfsbootmenu_install_config.sh"
-	cat <<-EOH >"${zfsbootmenu_install_config_loc}"
-		#!/bin/bash
-		set -euo pipefail
-		set -x
-		apt update
-
-		compile_zbm_git(){
-			##https://github.com/zbm-dev/zfsbootmenu/blob/master/testing/helpers/chroot-ubuntu.sh
-			##Prevent interactive prompts
-			#export DEBIAN_"${install_warning_level}"
-			#export DEBCONF_NONINTERACTIVE_SEEN=true
-
-			##bsdextrautils contains column utility used in zfsbootmenu UI.
-			apt-get install --yes bsdextrautils
-
-			##Install optional mbuffer package.
-			##https://github.com/zbm-dev/zfsbootmenu/blob/master/zfsbootmenu/install-helpers.sh
-			apt-get install --yes mbuffer
-
-			##Install packages needed for zfsbootmenu
-			apt-get install --yes --no-install-recommends \\
-				libsort-versions-perl \\
-				libboolean-perl \\
-				libyaml-pp-perl \\
-				git \\
-				fzf \\
-				make \\
-				kexec-tools \\
-				dracut-core \\
-				fzf \\
-				cpio
-
-			apt-get install --yes curl
-
-			mkdir -p /usr/local/src/zfsbootmenu
-			cd /usr/local/src/zfsbootmenu
-
-			##Download zfsbootmenu
-			case "${zbm_version}" in
-			master)
-
-				##Download the latest zfsbootmenu git master
-				git clone https://github.com/zbm-dev/zfsbootmenu .
-
-			;;
-
-			release)
-
-				##Download the latest zbm release
-				#latest_zbm_source="https://get.zfsbootmenu.org/source" #Source code from zfsbootmenu website.
-
-				use_yq="no"
-				case "\${use_yq}" in
-				yes)
-					##https://github.com/mikefarah/yq
-					wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && chmod +x /usr/bin/yq
-
-					latest_zbm_source="\$(curl -s https://api.github.com/repos/zbm-dev/zfsbootmenu/releases/latest | yq '.tarball_url')"
-				;;
-				no)
-					latest_zbm_source="\$(curl -s https://api.github.com/repos/zbm-dev/zfsbootmenu/releases/latest | grep tarball | cut -d : -f 2,3 | tr -d \"|sed 's/^[ \t]*//'|sed 's/,//')"
-				;;
-				esac
-
-				curl -L "\${latest_zbm_source-default}" | tar -zxv --strip-components=1 -f -
-
-			;;
-
-			*)
-				echo "Zfsbootmenu release version not recognised."
-				exit 1
-			;;
-
-			esac
-
-			make core dracut ##"make install" installs mkinitcpio, not needed.
-
-		}
-		compile_zbm_git
-
-		##configure zfsbootmenu
-		config_zbm(){
-
-			kb_layoutcode="\$(debconf-get-selections | grep keyboard-configuration/layoutcode | awk '{print \$4}')"
-
-			##https://github.com/zbm-dev/zfsbootmenu/blob/master/testing/helpers/configure-ubuntu.sh
-			##Update configuration file
-			sed \\
-			-e 's,ManageImages:.*,ManageImages: true,' \\
-			-e 's@ImageDir:.*@ImageDir: /boot/efi/EFI/ubuntu@' \\
-			-e 's,Versions:.*,Versions: false,' \\
-			-e "/CommandLine/s,ro,rd.vconsole.keymap=\${kb_layoutcode} ro," \\
-			-i /etc/zfsbootmenu/config.yaml
-
-			if [ "$quiet_boot" = "no" ]; then
-				sed -i 's,ro quiet,ro,' /etc/zfsbootmenu/config.yaml
-			fi
-
-			if [ -n "$zfs_root_password" ];
-			then
-				case "$zfs_root_encrypt" in
-					luks)
-						##https://github.com/agorgl/zbm-luks-unlock
-						zfsbootmenu_hook_root=/etc/zfsbootmenu/hooks ##https://docs.zfsbootmenu.org/en/v2.3.x/man/zfsbootmenu.7.html
-
-						mkdir -p \${zfsbootmenu_hook_root}/early-setup.d
-						cd \${zfsbootmenu_hook_root}/early-setup.d
-						curl -L -O https://raw.githubusercontent.com/agorgl/zbm-luks-unlock/master/hooks/early-setup.d/luks-unlock.sh
-						chmod +x \${zfsbootmenu_hook_root}/early-setup.d/luks-unlock.sh
-
-						#mkdir -p \${zfsbootmenu_hook_root}/boot-sel.d
-						#cd \${zfsbootmenu_hook_root}/boot-sel.d
-						#curl -L -O https://raw.githubusercontent.com/agorgl/zbm-luks-unlock/master/hooks/boot-sel.d/initramfs-inject.sh
-						#chmod +x \${zfsbootmenu_hook_root}/early-setup.d/initramfs-inject.sh
-
-						cd /etc/zfsbootmenu/dracut.conf.d/
-						curl -L -O https://raw.githubusercontent.com/agorgl/zbm-luks-unlock/master/dracut.conf.d/99-crypt.conf
-					;;
-				esac
-			else
-				true
-			fi
-
-
-		}
-		config_zbm
-
-		update-initramfs -c -k all
-		generate-zbm --debug
-
-	EOH
-
-	case "$1" in
-	chroot)
-		cp "${zfsbootmenu_install_config_loc}" "$mountpoint"/tmp
-		chroot "$mountpoint" /bin/bash -x "${zfsbootmenu_install_config_loc}"
-	;;
-	base)
-		/bin/bash "${zfsbootmenu_install_config_loc}"
-	;;
-	*)
-		exit 1
-	;;
-	esac
-
-}
-
 zfsbootmenu_install_config_container_Func(){
 	##Podman cannot be run properly in a chroot environment.
 	zfsbootmenu_install_config_loc="/tmp/zfsbootmenu_install_config.sh"
@@ -1268,177 +1119,14 @@ zfsbootmenu_install_config_container_Func(){
 	/bin/bash "${zfsbootmenu_install_config_loc}"
 
 	##Cleanup working directories
-	rm -rf "$zbmbuilddir"/containers
-	rm -rf "$zbmbuilddir"/run
+	rm -rf "$zbmbuilddir"/containers 2>/dev/null || true
+	rm -rf "$zbmbuilddir"/run 2>/dev/null || true
 
 	##Remove mountpoint references for use in the new system.
 	sed -i 's,'"$mountpoint"',,g' "$zbmbuilddir"/zbm-builder.conf
 	#sed -i 's,'"$mountpoint"',,g' "$zbmbuilddir"/zbm-builder.sh
 	mv "$zbmbuilddir"/zbm-builder_sh.bak "$zbmbuilddir"/zbm-builder.sh
 
-}
-
-remote_zbm_access_Func(){
-	modulesetup="/usr/lib/dracut/modules.d/60crypt-ssh/module-setup.sh"
-	cat <<-EOH >/tmp/remote_zbm_access.sh
-		#!/bin/sh
-		##Configure SSH server in Dracut
-		##https://github.com/zbm-dev/zfsbootmenu/wiki/Remote-Access-to-ZBM
-		apt update
-		apt install -y dracut-network dropbear
-		apt install -y isc-dhcp-client
-
-		config_dracut_crypt_ssh_module(){
-			git -C /tmp clone 'https://github.com/dracut-crypt-ssh/dracut-crypt-ssh.git'
-			mkdir /usr/lib/dracut/modules.d/60crypt-ssh
-			cp /tmp/dracut-crypt-ssh/modules/60crypt-ssh/* /usr/lib/dracut/modules.d/60crypt-ssh/
-			rm /usr/lib/dracut/modules.d/60crypt-ssh/Makefile
-			
-			##Comment out references to /helper/ folder in module-setup.sh. Components not required for ZFSBootMenu.
-			sed -i \\
-				-e 's,  inst "\$moddir"/helper/console_auth /bin/console_auth,  #inst "\$moddir"/helper/console_auth /bin/console_auth,' \\
-				-e 's,  inst "\$moddir"/helper/console_peek.sh /bin/console_peek,  #inst "\$moddir"/helper/console_peek.sh /bin/console_peek,' \\
-				-e 's,  inst "\$moddir"/helper/unlock /bin/unlock,  #inst "\$moddir"/helper/unlock /bin/unlock,' \\
-				-e 's,  inst "\$moddir"/helper/unlock-reap-success.sh /sbin/unlock-reap-success,  #inst "\$moddir"/helper/unlock-reap-success.sh /sbin/unlock-reap-success,' \\
-				"$modulesetup"
-		}
-		config_dracut_crypt_ssh_module
-		
-		setup_dracut_network(){
-			##setup network	
-			mkdir -p /etc/cmdline.d
-			
-			remoteaccess_dhcp_ver(){
-				dhcpver="\$1"
-				echo "ip=\${dhcpver:-default} rd.neednet=1" > /etc/cmdline.d/dracut-network.conf
-			}
-
-			##Dracut network options: https://github.com/dracutdevs/dracut/blob/master/modules.d/35network-legacy/ifup.sh
-			case "$remoteaccess_ip_config" in
-			dhcp | dhcp,dhcp6 | dhcp6)
-				remoteaccess_dhcp_ver "$remoteaccess_ip_config"
-			;;
-			static)
-				echo "ip=$remoteaccess_ip:::$remoteaccess_netmask:::none rd.neednet=1 rd.break" > /etc/cmdline.d/dracut-network.conf
-			;;
-			*)
-				echo "Remote access IP option not recognised."
-				exit 1
-			;;
-			esac
-			
-			echo "send fqdn.fqdn \"$remoteaccess_hostname\";" >> /usr/lib/dracut/modules.d/35network-legacy/dhclient.conf
-		}
-		setup_dracut_network
-
-		add_welcome_message(){
-			##add remote session welcome message
-			cat <<-EOF >/etc/zfsbootmenu/dracut.conf.d/banner.txt
-				Welcome to the ZFSBootMenu initramfs shell. Enter "zfsbootmenu" or "zbm" to start ZFSBootMenu.
-			EOF
-			chmod 755 /etc/zfsbootmenu/dracut.conf.d/banner.txt
-			
-			sed -i 's,  /sbin/dropbear -s -j -k -p \${dropbear_port} -P /tmp/dropbear.pid,  /sbin/dropbear -s -j -k -p \${dropbear_port} -P /tmp/dropbear.pid -b /etc/banner.txt,' /usr/lib/dracut/modules.d/60crypt-ssh/dropbear-start.sh
-			
-			##Copy files into initramfs
-			sed -i '$ s,^},,' "$modulesetup"
-			echo "  ##Copy dropbear welcome message" | tee -a "$modulesetup"
-			echo "  inst /etc/zfsbootmenu/dracut.conf.d/banner.txt /etc/banner.txt" | tee -a "$modulesetup"
-			echo "}" | tee -a "$modulesetup"
-		}
-		add_welcome_message
-		
-		create_host_keys(){
-			##create host keys
-			mkdir -p /etc/dropbear
-			for keytype in rsa ecdsa ed25519; do
-				#dropbearkey -t "\${keytype}" -f "/etc/dropbear/ssh_host_\${keytype}_key"
-				ssh-keygen -t "\${keytype}" -m PEM -f "/etc/dropbear/ssh_host_\${keytype}_key" -N ""
-				##-t key type
-				##-m key format
-				##-f filename
-				##-N passphrase
-			done
-		}
-		create_host_keys
-		
-		##Set ownership of initramfs authorized_keys
-		sed -i '/inst "\${dropbear_acl}"/a \\  chown root:root "\${initdir}/root/.ssh/authorized_keys"' "$modulesetup"
-		
-		config_dropbear(){
-			cat <<-EOF >/etc/zfsbootmenu/dracut.conf.d/dropbear.conf
-				## Enable dropbear ssh server and pull in network configuration args
-				##The default configuration will start dropbear on TCP port 222.
-				##This can be overridden with the dropbear_port configuration option.
-				##You do not want the server listening on the default port 22.
-				##Clients that expect to find your normal host keys when connecting to an SSH server on port 22 will
-				##   refuse to connect when they find different keys provided by dropbear.
-				
-				add_dracutmodules+=" crypt-ssh network-legacy "
-				install_optional_items+=" /etc/cmdline.d/dracut-network.conf "
-				
-				## Copy system keys for consistent access
-				dropbear_rsa_key="/etc/dropbear/ssh_host_rsa_key"
-				dropbear_ecdsa_key="/etc/dropbear/ssh_host_ecdsa_key"
-				dropbear_ed25519_key="/etc/dropbear/ssh_host_ed25519_key"
-				
-				##Access is by authorized keys only. No password.
-				##By default, the list of authorized keys is taken from /root/.ssh/authorized_keys on the host.
-				##A custom authorized_keys location can also be specified with the dropbear_acl variable.
-				##You can add your remote user key to a user authorized_keys file from a remote machine's terminal using:
-				##"ssh-copy-id -i ~/.ssh/id_rsa.pub $user@{IP_ADDRESS or FQDN of the server}"
-				##Then amend/uncomment the dropbear_acl variable to match:
-				#dropbear_acl="/home/${user}/.ssh/authorized_keys"
-				##Remember to "sudo generate-zbm" on the host after adding the remote user key to the authorized_keys file.
-				
-				##Note that login to dropbear is "root" regardless of which authorized_keys is used.
-			EOF
-		
-			systemctl stop dropbear
-			systemctl disable dropbear
-		}
-		config_dropbear
-		
-		##Increase ZFSBootMenu timer to allow for remote connection
-		sed -i 's,zbm.timeout=$timeout_zbm_no_remote_access,zbm.timeout=$timeout_zbm_remote_access,' /boot/efi/EFI/ubuntu/refind_linux.conf
-
-		generate-zbm --debug
-
-	EOH
-
-	case "$1" in
-	chroot)
-		cp /tmp/remote_zbm_access.sh "$mountpoint"/tmp
-		chroot "$mountpoint" /bin/bash -x /tmp/remote_zbm_access.sh
-	;;
-	base)
-		##Test for live environment.
-		if grep casper /proc/cmdline >/dev/null 2>&1;
-		then
-			echo "Live environment present. Reboot into new installation to install remoteaccess."
-			exit 1
-		else	
-			/bin/bash /tmp/remote_zbm_access.sh
-
-			sed -i 's,#dropbear_acl,dropbear_acl,' /etc/zfsbootmenu/dracut.conf.d/dropbear.conf
-			mkdir -p /home/"$user"/.ssh
-			chown "$user":"$user" /home/"$user"/.ssh
-			touch /home/"$user"/.ssh/authorized_keys
-			chmod 644 /home/"$user"/.ssh/authorized_keys
-			chown "$user":"$user" /home/"$user"/.ssh/authorized_keys
-			#hostname -I
-			echo "Zfsbootmenu remote access installed. Connect as root on port 222 during boot: \"ssh root@{IP_ADDRESS or FQDN of zfsbootmenu} -p 222\""
-			echo "Your SSH public key must be placed in \"/home/$user/.ssh/authorized_keys\" prior to reboot or remote access will not work."
-			echo "You can add your remote user key using the following command from the remote user's terminal if openssh-server is active on the host."
-			echo "\"ssh-copy-id -i $user@{IP_ADDRESS or FQDN of the server}\""
-			echo "Run \"sudo generate-zbm\" after copying across the remote user's public ssh key into the authorized_keys file."
-		fi
-	;;
-	*)
-		exit 1
-	;;
-	esac
-	
 }
 
 remote_zbm_access_container_Func(){
@@ -1768,7 +1456,6 @@ systemsetupFunc_part4(){
 			fi
 	EOCHROOT
 
-	#zfsbootmenu_install_config_Func "chroot"
 	zfsbootmenu_install_config_container_Func
 
 	chroot "$mountpoint" /bin/bash -x <<-EOCHROOT
@@ -2404,7 +2091,6 @@ setupremoteaccess(){
 	else 
 		disclaimer
 		update_date_time
-		#remote_zbm_access_Func "base"
 		remote_zbm_access_container_Func
 	fi
 }
@@ -2488,57 +2174,6 @@ createdatapool(){
 	
 }
 
-reinstall-zbm(){
-	
-	isolate_generate_zbm_ver(){
-		##generate-zbm quits after printing version number. Isolate in a function to allow script to continue.
-		set +e
-		generate-zbm --showver > /tmp/zfs_installed_version.txt || echo "No version number reported by generate-zbm --showver." > /tmp/zfs_installed_version.txt
-		set -e
-	}
-	
-	disclaimer
-	connectivity_check #Check for internet connectivity.
-	
-	##Live environment check.
-	if grep casper /proc/cmdline >/dev/null 2>&1;
-	then
-		echo "Live environment present. Reboot into new installation to re-install zfsbootmenu."
-		exit 1
-	else
-		true
-	fi
-	
-	command -v generate-zbm >/dev/null 2>&1 || { echo >&2 "Please install zfsbootmenu before attempting to re-install. Exiting."; exit 1; } #Check for Zfsbootmenu.
-	
-	##Version check
-	zbm_github_latest_version="$(curl -s https://api.github.com/repos/zbm-dev/zfsbootmenu/releases/latest | grep tag_name | cut -d : -f 2,3 | tr -d \"|sed 's/^[ \t]*//'|sed 's/,//'|sed 's,^v,,')"
-	printf '%s%s\n' "Latest zfsbootmenu github release version: " "${zbm_github_latest_version}" 
-	
-	isolate_generate_zbm_ver
-	
-	zbm_installed_version="$(cat /tmp/zfs_installed_version.txt)"
-	printf '%s%s\n' "Installed zfsbootmenu version: " "${zbm_installed_version}" 
-	if [ "${zbm_github_latest_version}" = "${zbm_installed_version}" ];
-	then
-		printf '%s\n' "Installed version of zfsbootmenu is the latest release. Enter Y to re-install or N to exit."
-		read -r reinstall_selection
-		case "${reinstall_selection-default}" in
-		Y|y)
-			echo "Re-installing zfsbootmenu."
-			update_date_time
-			zfsbootmenu_install_config_Func "base"
-		;;
-		*)
-			printf "%s\n" "Exiting."
-			exit 0
-		;;
-		esac
-	else
-		zfsbootmenu_install_config_Func "base"
-	fi
-}
-
 ##--------
 logFunc
 date
@@ -2615,13 +2250,8 @@ case "${1-default}" in
 		read -r _
 		createdatapool
 	;;
-	reinstall-zbm)
-		echo "Re-installing zfsbootmenu. Press Enter to Continue or CTRL+C to abort."
-		read -r _
-		reinstall-zbm
-	;;
 	*)
-		printf "%s\n%s\n%s\n" "-----" "Usage: $0 initial | postreboot | remoteaccess | datapool | reinstall-zbm" "-----"
+		printf "%s\n%s\n%s\n" "-----" "Usage: $0 initial | postreboot | remoteaccess | datapool" "-----"
 	;;
 esac
 
